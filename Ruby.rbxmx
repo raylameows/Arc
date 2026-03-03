@@ -1,0 +1,620 @@
+<roblox xmlns:xmime="http://www.w3.org/2005/05/xmlmime" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.roblox.com/roblox.xsd" version="4">
+	<External>null</External>
+	<External>nil</External>
+	<Item class="Folder" referent="RBXCC5C41B4E44A41ABBD7516A6F5B169E3">
+		<Properties>
+			<BinaryString name="AttributesSerialize"></BinaryString>
+			<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+			<bool name="DefinesCapabilities">false</bool>
+			<string name="Name">Ruby</string>
+			<int64 name="SourceAssetId">-1</int64>
+			<BinaryString name="Tags"></BinaryString>
+		</Properties>
+		<Item class="ModuleScript" referent="RBX105369AC5BEE4CC5B0F3FDCDBF577CAC">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local GithubLoader = {}
+GithubLoader.FileTypeToInstance = {
+	[`dir`] = `Folder`,
+	[`file.server.lua`] = `Script`,
+	[`file.lua`] = `ModuleScript`,
+}
+GithubLoader.RequestsProcessing = 0
+GithubLoader.LastProcessed = 0
+
+function GithubLoader.toProxy(url: string)
+	local pattern = "^https://raw%.githubusercontent%.com/([^/]+)/([^/]+)/([^/]+)/(.*)$"
+	local user, repo, branch, path = url:match(pattern)
+
+	if not (user and repo and branch and path) then
+		warn(`GithubLoader :: Invalid url {url}`)
+		return nil
+	end
+
+	local jsDelivrUrl = ("https://cdn.jsdelivr.net/gh/%s/%s@%s/%s"):format(user, repo, branch, path)
+	return jsDelivrUrl
+end
+
+function GithubLoader.call(url: string)
+	GithubLoader.RequestsProcessing += 1
+	local success, response = pcall(function()
+		return HttpService:GetAsync(url)
+	end)
+
+	GithubLoader.RequestsProcessing -= 1
+	GithubLoader.LastProcessed = tick()
+	return success, response
+end
+
+function GithubLoader.dir(holder: Folder, folder: Folder, url: string)
+	print(`GithubLoader :: Loading {url}`)
+	folder = folder or holder
+
+	local success, response = GithubLoader.call(url)
+	if not success then warn(`GithubLoader :: {response}`) return end
+
+	local files = HttpService:JSONDecode(response)
+	local currentBatch = 0
+	for _, fileData in (files) do
+		local split = string.split(fileData.name, `.`)
+		local key = `{fileData.type}{split[2] and `.{split[2]}` or ``}{#split >= 3 and `.{split[3]}` or ``}`
+		local obj = Instance.new(GithubLoader.FileTypeToInstance[key])
+		obj.Name = split[1]
+		obj.Parent = folder
+
+		if fileData.type == `dir` then
+			task.spawn(function()
+				GithubLoader.dir(holder, obj, fileData.url)
+			end)
+		elseif fileData.download_url then
+			task.spawn(function()
+				local success, response = GithubLoader.call(GithubLoader.toProxy(fileData.download_url))
+				if not success then warn(`GithubLodaer :: {response}`) return end
+				obj.Source = response
+			end)
+		end
+	end
+end
+
+function GithubLoader.repo(url: string, name: string?, yield: boolean?)
+	local folder = Instance.new(`Folder`)
+	folder.Name = name or `RubySerializerFolder`
+	folder.Parent = ReplicatedStorage
+
+	GithubLoader.dir(folder, nil, url)
+
+	if yield then
+		repeat task.wait() until GithubLoader.RequestsProcessing == 0 and tick() - GithubLoader.LastProcessed >= 1
+	end
+
+	return folder
+end
+
+return GithubLoader]]></ProtectedString>
+				<string name="ScriptGuid">{b106303e-9483-3906-5006-95dd9611cf5c}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">GithubLoader</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<BinaryString name="Tags"></BinaryString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX5B68A318F615411CAF47FABDD9B23E17">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[local CollectionService = game:GetService("CollectionService")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+
+local GithubLoader = require(`./GithubLoader`)
+
+local Ruby = {}
+Ruby.Plugin = nil -- The `plugin` instance
+Ruby.Exporter = nil -- The required SerializationTools Writing/Main.lua Mod
+Ruby.Folder = nil -- The folder containing the SerializationTools, stored in CoreGui
+Ruby.Button = nil -- The plugin button
+Ruby.FetchSourceButton = nil -- The UI button used to perform a checkup or a refetch
+Ruby.SerializerAPI = nil -- The API of SerializationTools
+
+Ruby.BackgroundChecks = false -- Whether background checks are enabled
+Ruby.Active = false -- Whether the plugin is currently enabled
+Ruby.Outdated = false -- Whether the SerializationTools are outdated
+Ruby.Prefix = `` -- The prefix for SetSetting and GetSetting
+
+Ruby.LoadingIDs = { -- An array of image IDs for a loading GIF
+	138016358530888, 70597296726422, 127832681223670, 83695390279728, 133089274035459, 84382514433800, 
+	78784862813485, 112194325401656, 139036767631117, 102076830057398, 131568282874164
+}
+
+function Ruby.encode(dir: Folder?)
+	local encode = {}
+	for _,file: Instance in (dir and dir:GetChildren() or Ruby.Folder:GetChildren()) do
+		if file:IsA(`LuaSourceContainer`) then
+			table.insert(encode, {
+				Class = file.ClassName,
+				Source = file.Source,
+				Name = file.Name,
+			})
+		elseif file:IsA(`Folder`) then
+			table.insert(encode, {
+				Class = file.ClassName,
+				Name = file.Name,
+				Contents = Ruby.encode(file)
+			})
+		end
+	end
+
+	return HttpService:JSONEncode(encode)
+end
+
+function Ruby.decode(str: string)
+	local decoded = HttpService:JSONDecode(str)
+	for _,file in (decoded) do
+		if file.Contents then
+			file.Contents = Ruby.decode(file.Contents)
+		end
+	end
+
+	return decoded
+end
+
+function Ruby.build(tbl: {[number]: {}}, at: Instance)
+	for _,file in (tbl) do
+		local inst = Instance.new(file.Class)
+		inst.Name = file.Name
+		if file.Source then
+			inst.Source = file.Source
+		end
+		if file.Contents then
+			Ruby.build(file.Contents, inst)
+		end
+		inst.Parent = at
+	end
+	
+	return at
+end
+
+function Ruby.backgroundChecks(enabled: boolean)
+	if Ruby.BackgroundChecks == enabled then return end
+
+	Ruby.BackgroundChecks = enabled
+	if Ruby.BackgroundChecks then
+		task.spawn(function()
+			while Ruby.BackgroundChecks do
+				task.wait(10*60)
+				if not Ruby.BackgroundChecks then break end
+				Ruby.checkForUpdate()
+			end
+		end)
+	end
+end
+
+function Ruby.checkForUpdate(noPrint: boolean?)
+	--if (not Ruby.Root or not Ruby.Root.Parent) then 
+	--	Ruby.backgroundChecks(false) 
+	--	return nil
+	--end
+
+	local recent = Ruby.getLatestUpdate()
+	if recent == nil then return nil end
+
+	if recent ~= Ruby.Plugin:GetSetting(`{Ruby.Prefix}Date`) then
+		if not Ruby.Outdated and not noPrint then
+			warn(`Ruby :: Detected new SerializationTools commit`)
+		end
+		Ruby.Outdated = true
+		Ruby.updateStatus()
+		return true
+	end
+
+	return false
+end
+
+function Ruby.updateStatus()
+	if Ruby.FetchSourceButton then
+		Ruby.FetchSourceButton.BackgroundColor3 = Ruby.Outdated and Color3.fromRGB(255, 38, 52) or Color3.fromRGB(0, 0, 0)
+	end
+end
+
+function Ruby.getFetchSourceButton()
+	local possible = CollectionService:GetTagged(`RubySerializerFetchSourceButton`)
+	for _,button in (possible) do
+		if button:IsA(`TextButton`) and button:IsDescendantOf(CoreGui) then
+			Ruby.FetchSourceButton = button
+			return button
+		end
+	end
+
+	return nil
+end
+
+function Ruby.getLatestUpdate()
+	local success, data = GithubLoader.call(
+		`https://api.github.com/repos/MoonstoneSkies/InfiltrationEngine-Custom-Missions/commits?path=Plugins/src/SerializationTools&per_page=1`
+	)
+	if not success then warn(`Ruby :: Checking SerializationTools failed {data}`) return end
+	data = HttpService:JSONDecode(data)
+
+	local lastUpdate = data[1].commit.committer.date
+	return lastUpdate
+end
+
+function Ruby.fetch()
+	local loaded = false do
+		task.spawn(function()
+			local prevImg = Ruby.Button.Icon
+			while not loaded do
+				for i,v in (Ruby.LoadingIDs) do
+					Ruby.Button.Icon = `rbxassetid://{v}`
+					task.wait(0.08)
+				end
+			end
+			Ruby.Button.Icon = prevImg
+		end)
+	end
+
+	local folder = workspace:FindFirstChild(`SerializationToolsDebug`) and workspace.SerializationToolsDebug:Clone() or GithubLoader.repo(
+		`https://api.github.com/repos/MoonstoneSkies/InfiltrationEngine-Custom-Missions/contents/Plugins/src/SerializationTools`, 
+		`SerializationToolsRuby`, 
+		true
+	)
+	folder.Archivable = false
+	folder.Name = `SerializationToolsRuby`
+	folder.Parent = CoreGui
+
+	local mainWriting = folder:FindFirstChild(`Writing`) and folder.Writing:FindFirstChild(`Main`)
+	local mainAPI = folder:FindFirstChild(`API`) and folder.API:FindFirstChild(`Main`)
+	if not mainWriting or not mainAPI then 
+		warn(`Ruby :: {not mainWriting and `Writing/` or `API/`}Main.lua is missing`) 
+		loaded = true
+		folder:Destroy()
+		return 
+	end
+
+	Ruby.Folder = folder
+	Ruby.Plugin:SetSetting(`{Ruby.Prefix}Date`, `recent`)
+	task.spawn(function()
+		Ruby.Plugin:SetSetting(`{Ruby.Prefix}Date`, Ruby.getLatestUpdate(folder))
+	end)
+
+	local injections = {
+		[`local%s+readbackEnabled%s*=%s*FeatureCheck%("Readback"%)%s*==%s*true`] = 
+		[[
+		local fetchSourceButton = Button({
+			Size = UDim2.new(0, 200, 0, 30),
+			Enabled = module.EnabledState,
+			Position = UDim2.new(0, apiDevEnabled and 270 or 50, 1, -50),
+			AnchorPoint = Vector2.new(0, 1),
+			Text = `Ruby: Check`,
+		})
+		fetchSourceButton:AddTag(`RubySerializerFetchSourceButton`)
+		]],
+
+		[`(%s*Create%(%\"ScrollingFrame\"%s*,)`] = 
+		[[
+		fetchSourceButton,
+		]],
+	}
+	local modified = mainWriting.Source
+	for pattern,inject in (injections) do
+		modified = modified:gsub(pattern, inject .. `\n%1`, 1)
+	end
+	mainWriting.Source = modified
+	task.wait(0.5)
+	if Ruby.Exporter then Ruby.Exporter.Clean() end
+	Ruby.SerializerAPI = require(mainAPI)
+	Ruby.SerializerAPI.Init()
+	Ruby.Exporter = require(mainWriting)
+	Ruby.Plugin:SetSetting(`{Ruby.Prefix}Cache`, Ruby.encode(folder))
+	task.wait(0.5)
+	loaded = true
+	Ruby.backgroundChecks(true)
+end
+
+function Ruby.refetch()
+	Ruby.Active = false
+	Ruby.Plugin:Deactivate()
+	Ruby.Folder:Destroy()
+	Ruby.fetch()
+end
+
+return Ruby]]></ProtectedString>
+				<string name="ScriptGuid">{a6eecf96-7338-5585-db79-0e702a348b5a}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">Ruby</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<BinaryString name="Tags"></BinaryString>
+			</Properties>
+		</Item>
+		<Item class="Script" referent="RBX374F534DE08A4DB1AD5BD852C8C8C769">
+			<Properties>
+				<ProtectedString name="Source"><![CDATA[local CollectionService = game:GetService("CollectionService")
+local CoreGui = game:GetService("CoreGui")
+local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local pluginPrefix = `RUBY_`
+local Ruby = require(`./Ruby`)
+Ruby.Plugin = plugin
+Ruby.Prefix = pluginPrefix
+
+local Toolbar = plugin:CreateToolbar("Ruby")
+local Button = Toolbar:CreateButton(`Ruby`, `Fetches the most recent serializer from the Github and automatically adds itself as a plugin`, `rbxassetid://92473074743015`)
+Ruby.Button = Button
+
+if plugin:GetSetting(`{pluginPrefix}EnableAllFeaturesByDefault`) == nil then
+	plugin:SetSetting(`{pluginPrefix}EnableAllFeaturesByDefault`, false)
+end
+
+local deb = false
+Button.Click:Connect(function()
+	if deb then return end
+	
+	local Cache = plugin:GetSetting(`{pluginPrefix}Cache`)
+	if not Cache then
+		deb = true
+		Ruby.fetch()
+		task.wait()
+		deb = false
+		return
+	elseif Cache and not Ruby.Exporter then
+		deb = true
+		local folder = Instance.new(`Folder`)
+		folder.Archivable = false
+		folder.Name = `SerializationToolsRuby`
+		folder.Parent = CoreGui
+		Ruby.build(Ruby.decode(Cache), folder)
+		Ruby.Exporter = require(folder.Writing.Main)
+		Ruby.Folder = folder
+		task.spawn(function()
+			Ruby.checkForUpdate()
+		end)
+		task.wait()
+		deb = false
+	end
+	if plugin:GetSetting(`{pluginPrefix}EnableAllFeaturesByDefault`) and not workspace:GetAttribute(`RubyEnabledAllFeaturesByDefault`) then
+		workspace:SetAttribute(`SerializerEnableAllFeatures`, true)
+		workspace:SetAttribute(`RubyEnabledAllFeaturesByDefault`, true)
+	end
+
+	if not Ruby.Active then
+		Ruby.Active = true
+		plugin:Activate(true)
+		Ruby.Exporter.Init(plugin:GetMouse())
+		Ruby.getFetchSourceButton()
+		Ruby.updateStatus()
+		local button: TextButton = Ruby.FetchSourceButton
+		if button then
+			local lastClickTime = 0
+			local doubleClickThreshold = 0.3
+			local rubyButtonDeb = false
+			local awaitingSecondClick = false
+
+			button.Activated:Connect(function()
+				if rubyButtonDeb then return end
+				local currentTime = tick()
+				if awaitingSecondClick and (currentTime - lastClickTime <= doubleClickThreshold) then
+					awaitingSecondClick = false
+					button.Text = `Ruby: Check`
+					print(`Ruby :: Performing refetch`)
+					Ruby.refetch()
+					return
+				end
+
+				awaitingSecondClick = true
+				button.Text = `Ruby: Fetch`
+
+				task.delay(doubleClickThreshold, function()
+					if awaitingSecondClick then
+						awaitingSecondClick = false
+						button.Text = `Ruby: Check`
+
+						print(`Ruby :: Performing update check`)
+						local outdated = Ruby.checkForUpdate(true)
+						if outdated == false then
+							print(`Ruby :: Serializer is up to date`)
+						elseif outdated == true then
+							print(`Ruby :: Serializer is outdated`)
+						end
+					end
+				end)
+
+				lastClickTime = currentTime
+			end)
+		end
+	else
+		Ruby.Active = false
+		plugin:Deactivate()
+	end
+end)
+
+local function Disable()
+	if Ruby.Exporter then
+		Ruby.Exporter.Clean()
+	end
+	if Ruby.FetchSourceButton then
+		Ruby.FetchSourceButton = nil
+	end
+	Ruby.Active = false
+end
+
+local function Unload()
+	if Ruby.SerializerAPI then
+		Ruby.SerializerAPI.Clean()
+	end
+	Disable()
+	if Ruby.Folder then
+		Ruby.Folder:Destroy()
+	end
+end
+
+plugin.Unloading:Connect(Unload)
+plugin.Deactivation:Connect(Disable)
+
+local Arc = require(`./ArcAPI`)
+local flagToSetting = {
+	enableallfeaturesbydefault = "EnableAllFeaturesByDefault",
+}
+if Arc.check() then
+	Arc.new(`ruby`):Fill({
+		color = Color3.fromRGB(172, 13, 74),
+		context = {type = `Instance`},
+		subcommands = {
+			[`set`] = {
+				color = Color3.fromRGB(121, 146, 255),
+				flags = {
+					enableallfeaturesbydefault = {short = `eafbd`, type = `boolean`},
+					force = {short = `f`},
+				},
+				run = function(data: {[string]: any})
+					print(data)
+					local flags = data.flags
+					
+					local changes = ``
+					for k,v in (flags) do
+						if k == `force` then continue end
+						
+						local old = plugin:GetSetting(`{pluginPrefix}{flagToSetting[k]}`)
+						if old == nil and not flags.force then continue end
+						if changes ~= `` then changes ..= `\n` end
+						
+						changes ..= `{flagToSetting[k]}: {old} -> {v}`
+						plugin:SetSetting(`{pluginPrefix}{flagToSetting[k]}`, v)
+					end
+
+					return changes ~= `` and changes or `No changes were made`
+				end,
+			},
+			[`get`] = {
+				color = Color3.fromRGB(121, 146, 255),
+				flags = {},
+				run = function(data: {[string]: any})
+					local settingsStr = ``
+					for k,v in (flagToSetting) do
+						if settingsStr ~= `` then settingsStr ..= `\n` end
+						settingsStr ..= `{v}: {plugin:GetSetting(`{pluginPrefix}{v}`)}`
+					end
+
+					return settingsStr ~= `` and settingsStr or `No settings found`
+				end,
+			}
+		},
+	}):Register()
+end]]></ProtectedString>
+				<bool name="Disabled">false</bool>
+				<Content name="LinkedSource"><null></null></Content>
+				<token name="RunContext">3</token>
+				<string name="ScriptGuid">{8b268a70-c52c-4efc-b66c-59a475d1b1fd}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">Main</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<BinaryString name="Tags"></BinaryString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX3EBB6F5C906944478E77F47E561232BD">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[local Terminal = {}
+
+function Terminal.new()
+	local self = setmetatable({}, {__index = Terminal})
+	
+	
+	
+	return self
+end
+
+return Terminal]]></ProtectedString>
+				<string name="ScriptGuid">{e73fe4a8-3273-e06d-c8ef-d554d8c63b34}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">Terminal</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<BinaryString name="Tags"></BinaryString>
+			</Properties>
+		</Item>
+		<Item class="ModuleScript" referent="RBX135BBA87A07042AB8E4D90FAB958F4D5">
+			<Properties>
+				<Content name="LinkedSource"><null></null></Content>
+				<ProtectedString name="Source"><![CDATA[local CoreGui = game:GetService("CoreGui")
+
+local API = {}
+API.__index = API
+
+-- Initiates the API
+function API._init()
+	shared.ArcAPI = API
+	
+	local loaded = Instance.new(`BoolValue`)
+	loaded.Value = true
+	loaded.Name = `LoadedArcAPI`
+	loaded.Parent = CoreGui
+	
+	return
+end
+
+-- Checks if the API has loaded
+function API.check()
+	local loaded = CoreGui:WaitForChild(`LoadedArcAPI`, 10)
+	if not loaded then return end
+	
+	return true
+end
+
+-- Creates a new Arc command instance, does not register it in the commands list instantly
+function API.new(key: string): typeof(API)
+	local self = setmetatable({}, API)
+	self.Key = key
+	self.Command = {}
+	
+	return self
+end
+
+-- Sets the command's `field` to `value`
+function API:Set(field: string, value: any): typeof(API)
+	self.Command[field] = value
+
+	return self
+end
+
+-- Fills all the fields of the command with the data's keys and values
+function API:Fill(data: {}): typeof(API)
+	for k,v in (data) do
+		self.Command[k] = v
+	end
+	
+	return self
+end
+
+-- Registers the command to Arc's command list and removes it from cache
+function API:Register(): nil
+	if not shared.Arc then warn(`shared.Arc is missing`) return end
+	
+	shared.Arc.Commands[self.Key] = self.Command
+	table.clear(self)
+	self = nil
+	
+	return nil
+end
+
+return API]]></ProtectedString>
+				<string name="ScriptGuid">{c69d498a-7e46-55f6-2e85-ad8cb83f9810}</string>
+				<BinaryString name="AttributesSerialize"></BinaryString>
+				<SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+				<bool name="DefinesCapabilities">false</bool>
+				<string name="Name">ArcAPI</string>
+				<int64 name="SourceAssetId">-1</int64>
+				<BinaryString name="Tags"></BinaryString>
+			</Properties>
+		</Item>
+	</Item>
+</roblox>
