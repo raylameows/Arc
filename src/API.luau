@@ -4,7 +4,7 @@ local API = {}
 API.__index = API
 
 -- Initiates the API
-function API._init()
+function API.init()
 	shared.ArcAPI = API
 
 	local loaded = Instance.new(`BoolValue`)

@@ -1,6 +1,6 @@
-local Arc = require(`./Arc`)
+local Arc = require(`./Arc/Core`)
 Arc.Plugin = plugin
-Arc.widget(plugin:CreateDockWidgetPluginGuiAsync(`ArcTerminal`, DockWidgetPluginGuiInfo.new(
+Arc.mount(plugin:CreateDockWidgetPluginGuiAsync(`ArcTerminal`, DockWidgetPluginGuiInfo.new(
 	Enum.InitialDockState.Float,
 	false,
 	false,
@@ -12,8 +12,8 @@ Arc.widget(plugin:CreateDockWidgetPluginGuiAsync(`ArcTerminal`, DockWidgetPlugin
 
 local API = require(`./API`)
 
-Arc._init()
-API._init()
+Arc.init()
+API.init()
 
 local Toolbar = plugin:CreateToolbar(`Arc Terminal`)
 local Button = Toolbar:CreateButton(`Arc`, `Opens the Arc Terminal`, `rbxassetid://17799860953`)
